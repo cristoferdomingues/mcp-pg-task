@@ -31,7 +31,16 @@ function fail (error: string, message: string, extra: Record<string, unknown> = 
 }
 
 function message (e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  if (e instanceof Error) return e.message;
+  if (typeof e === "object" && e !== null) {
+    // Never let a plain object collapse into "[object Object]".
+    try {
+      return JSON.stringify(e);
+    } catch {
+      return Object.prototype.toString.call(e);
+    }
+  }
+  return String(e);
 }
 
 /**
@@ -56,8 +65,8 @@ export function registerTools (server: McpServer): void {
       inputSchema: describeInput.shape
     },
     async (rawArgs: unknown) => {
-      const args = describeInput.parse(rawArgs ?? {});
       try {
+        const args = describeInput.parse(rawArgs ?? {});
         const catalog = await loadCatalog();
         const tables = [...catalog.tables.values()].filter((t) => !args.table || t.table === args.table);
         if (args.table && tables.length === 0) {
@@ -86,6 +95,9 @@ export function registerTools (server: McpServer): void {
           }
         });
       } catch (e) {
+        if (e instanceof z.ZodError) {
+          return fail("INVALID_ARGUMENTS", e.errors.map((x) => `${x.path.join(".")}: ${x.message}`).join("; "));
+        }
         return fail("DESCRIBE_FAILED", message(e));
       }
     }
@@ -126,6 +138,9 @@ export function registerTools (server: McpServer): void {
         });
       } catch (e) {
         if (e instanceof QueryError) return fail(e.code, e.message);
+        if (e instanceof z.ZodError) {
+          return fail("INVALID_ARGUMENTS", e.errors.map((x) => `${x.path.join(".")}: ${x.message}`).join("; "));
+        }
         return fail("QUERY_FAILED", message(e));
       }
     }
@@ -143,7 +158,15 @@ export function registerTools (server: McpServer): void {
       inputSchema: unmaskInput.shape
     },
     async (rawArgs: unknown) => {
-      const args = unmaskInput.parse(rawArgs);
+      let args: z.infer<typeof unmaskInput>;
+      try {
+        args = unmaskInput.parse(rawArgs);
+      } catch (e) {
+        if (e instanceof z.ZodError) {
+          return fail("INVALID_ARGUMENTS", e.errors.map((x) => `${x.path.join(".")}: ${x.message}`).join("; "));
+        }
+        return fail("INVALID_ARGUMENTS", message(e));
+      }
       if (!config.unmaskEnabled) {
         return fail(
           "UNMASK_DISABLED",
