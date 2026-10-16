@@ -90,6 +90,7 @@ export interface BuiltQuery {
 
 interface Ctx {
   params: unknown[];
+  piiKeyIndex: number | null;
   piiColumns: string[];
   rawPiiFilters: string[];
   sensitiveFilters: string[];
@@ -98,6 +99,21 @@ interface Ctx {
 function push (ctx: Ctx, value: unknown): string {
   ctx.params.push(value);
   return `$${ctx.params.length}`;
+}
+
+/**
+ * The PII key is bound ONLY when a tokenize path actually references it.
+ * Reserving it unconditionally made Postgres reject every public-only query
+ * with `42P18: could not determine data type of parameter $1` — an unreferenced
+ * parameter has no inferable type. Pushing it lazily keeps single-table,
+ * public-column queries working while never inlining the key into SQL.
+ */
+function piiKeyRef (ctx: Ctx): string {
+  if (ctx.piiKeyIndex === null) {
+    ctx.params.push(config.piiKey);
+    ctx.piiKeyIndex = ctx.params.length;
+  }
+  return `$${ctx.piiKeyIndex}`;
 }
 
 function columnOf (catalog: Catalog, table: string, column: string): ColumnInfo {
@@ -148,7 +164,7 @@ function renderSelect (col: ColumnInfo, ctx: Ctx): { expr: string; renderedAs: R
     case "pii_direct": {
       const kind = push(ctx, col.piiKind ?? "generic");
       ctx.piiColumns.push(`${qual} (token)`);
-      return { expr: `pii_tokenize(${qual}, ${kind}, $1)`, renderedAs: "token" };
+      return { expr: `pii_tokenize(${qual}, ${kind}, ${piiKeyRef(ctx)})`, renderedAs: "token" };
     }
     case "pii_embedded":
       ctx.piiColumns.push(`${qual} (redacted)`);
@@ -196,7 +212,7 @@ function renderWhere (
         // Filter by tokens the agent already holds: raw PII never appears.
         const kind = push(ctx, col.piiKind ?? "generic");
         const arr = push(ctx, item.value);
-        return `pii_tokenize(${qual}, ${kind}, $1) = ANY(${arr}::text[])`;
+        return `pii_tokenize(${qual}, ${kind}, ${piiKeyRef(ctx)}) = ANY(${arr}::text[])`;
       }
       ctx.rawPiiFilters.push(`${qual} in (raw values supplied)`);
     } else if (col.classification !== "public") {
@@ -218,7 +234,7 @@ function renderWhere (
     }
     const kind = push(ctx, col.piiKind ?? "generic");
     const v = push(ctx, item.value);
-    return `pii_tokenize(${qual}, ${kind}, $1) ${SCALAR_OPS[item.op]} ${v}`;
+    return `pii_tokenize(${qual}, ${kind}, ${piiKeyRef(ctx)}) ${SCALAR_OPS[item.op]} ${v}`;
   }
 
   // Raw-value filter path: allowed, but always surfaced in the approval hints.
@@ -246,9 +262,10 @@ export function buildQuery (raw: QueryInput, catalog: Catalog): BuiltQuery {
     );
   }
 
-  // $1 is always the PII key (used by pii_tokenize); every other value is
-  // appended as a bound parameter. Nothing is ever string-interpolated.
-  const ctx: Ctx = { params: [config.piiKey], piiColumns: [], rawPiiFilters: [], sensitiveFilters: [] };
+  // The PII key (used by pii_tokenize) is bound lazily on first use; every
+  // other value is appended as a bound parameter. Nothing is ever
+  // string-interpolated.
+  const ctx: Ctx = { params: [], piiKeyIndex: null, piiColumns: [], rawPiiFilters: [], sensitiveFilters: [] };
 
   const usedNames = new Set<string>();
   const columns: RenderedColumn[] = [];

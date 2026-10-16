@@ -78,6 +78,58 @@ The payload is a validated AST (Zod), not a string:
 - `where: { table, column, op, value }[]` — `op` from a fixed allow-list
 - `orderBy`, `limit` — `limit` is mandatory and capped server-side by `MAX_ROWS`
 
+## How to Use from Chat
+
+When interacting with an AI agent connected to this MCP server, you can query data in natural language or execute structured tool calls. The agent maps user requests to the 3 available tools:
+
+### 1. `db.describe` (Metadata & Schema — Always Safe)
+Inspect the exposed catalog, column classifications, and allowed joins without reading any row data.
+- **Natural language prompts:**
+  - *"Describe the available tables and columns in the database."*
+  - *"Show the schema for `patients` and how PII fields are handled."*
+  - *"Which join relationships are permitted between tables?"*
+- **Example tool payload:**
+  ```json
+  { "table": "patients" }
+  ```
+
+### 2. `db.query` (Declarative Queries — Ask-Gated)
+Query and join across tables with server-side masking (`tok_...` tokens, redacted free text, restricted clinical fields). Raw SQL text is never accepted.
+- **Natural language prompts:**
+  - *"How many appointments are scheduled per medical specialty?"*
+  - *"List appointments for 'Cardiology' ordered by date."*
+  - *"Find all appointments associated with patient token `tok_1a2b3c...`."*
+  - *"Show patient appointment history joining patients and appointments (limit 10)."*
+- **Example tool payload:**
+  ```json
+  {
+    "tables": ["patients", "appointments"],
+    "columns": [
+      { "table": "patients", "column": "cpf" },
+      { "table": "appointments", "column": "specialty" },
+      { "table": "appointments", "column": "appointment_at" }
+    ],
+    "where": [
+      { "table": "appointments", "column": "specialty", "op": "eq", "value": "Cardiology" }
+    ],
+    "limit": 10
+  }
+  ```
+
+### 3. `db.unmask` (Token Resolution — Deny-Gated)
+Resolves pseudonym tokens back to raw PII from the encrypted vault. Disabled by default (`PII_UNMASK_ENABLED=false`) and requires explicit approval with a stated business reason.
+- **Natural language prompts:**
+  - *"Reveal the original value for token `tok_a1b2c3d4e5f60718` for emergency contact verification."*
+- **Example tool payload:**
+  ```json
+  { "tokens": ["tok_a1b2c3d4e5f60718"] }
+  ```
+
+### Boundaries & Restrictions
+- **No raw SQL or DML/DDL:** Commands like `SELECT * FROM ...`, `INSERT`, `UPDATE`, `DELETE`, or `DROP` are rejected by design (the database user `mcp_reader` is strictly read-only, and no raw SQL string input exists).
+- **No arbitrary joins:** Only relationships declared in `join_relationships` can be joined.
+- **No uncataloged columns:** Columns missing from the classification catalog are invisible and inaccessible.
+
 ## Layout
 
 ```
