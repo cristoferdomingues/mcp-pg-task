@@ -4,7 +4,7 @@ A Postgres MCP server (`mcp-postgres-pii`) that lets an agent **join across PII 
 while guaranteeing **raw PII never enters the agent's context**. Built as the server half
 of a two-part system: this repo is the MCP server; the consuming subagent ships in
 `artifacts/` (`pii-data-analyst` agent + `pii-query-protocol` skill + `pii-data-guardrails`
-rule) — snapshots of the canonical copies in the BlackAgents workspace.
+rule).
 
 ## The problem it solves
 
